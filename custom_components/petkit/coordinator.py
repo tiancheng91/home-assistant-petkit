@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from datetime import timedelta
 import json
+import asyncio
 
 from petkitaio import PetKitClient
 from petkitaio.exceptions import AuthError, PetKitError, RegionError, ServerError
@@ -62,16 +63,22 @@ class PetKitDataUpdateCoordinator(DataUpdateCoordinator):
     async def _async_update_data(self) -> PetKitData:
         """Fetch data from PetKit."""
 
-        try:
-            data = await self.client.get_petkit_data()
-            nl = '\n'
-            LOGGER.debug(f'Found the following PetKit devices/pets: {nl}{json.dumps(data, default=vars, indent=4)}')
-        except TypeError:
-            LOGGER.debug('Encountered TypeError while formatting returned PetKit devices for logging.')
-            return data
-        except (AuthError, RegionError) as error:
-            raise ConfigEntryAuthFailed(error) from error
-        except (ServerError, PetKitError) as error:
-            raise UpdateFailed(error) from error
-        else:
-            return data
+        # 尝试获取数据，最多重试一次
+        for attempt in range(3):
+            try:
+                data = await self.client.get_petkit_data()
+                nl = '\n'
+                LOGGER.debug(f'Found the following PetKit devices/pets: {nl}{json.dumps(data, default=vars, indent=4)}')
+                return data
+            except TypeError:
+                LOGGER.error('Encountered TypeError while formatting returned PetKit devices for logging.')
+                return data
+            except (AuthError, RegionError) as error:
+                # 认证错误不重试，直接抛出
+                raise ConfigEntryAuthFailed(error) from error
+            except Exception as error:
+                await asyncio.sleep(1)
+                LOGGER.warning(f'Failed to update PetKit data (attempt {attempt + 1}/3): {error}. Retrying...')
+
+        # 理论上不会到达这里，但为了类型检查添加
+        return self.data if self.data is not None else PetKitData()
